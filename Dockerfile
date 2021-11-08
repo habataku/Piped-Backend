@@ -1,4 +1,4 @@
-FROM eclipse-temurin:11-jdk AS build
+FROM eclipse-temurin:17-jdk AS build
 
 WORKDIR /app/
 
@@ -6,7 +6,7 @@ COPY . /app/
 
 RUN chmod +x ./gradlew && ./gradlew shadowJar
 
-FROM eclipse-temurin:11-jre
+FROM eclipse-temurin:17-jre
 
 WORKDIR /app/
 
