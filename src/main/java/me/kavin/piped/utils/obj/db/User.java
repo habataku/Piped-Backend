@@ -1,24 +1,15 @@
 package me.kavin.piped.utils.obj.db;
 
+import jakarta.persistence.*;
+
 import java.io.Serializable;
 import java.util.List;
 import java.util.UUID;
 
-import javax.persistence.CollectionTable;
-import javax.persistence.Column;
-import javax.persistence.ElementCollection;
-import javax.persistence.Entity;
-import javax.persistence.GeneratedValue;
-import javax.persistence.GenerationType;
-import javax.persistence.Id;
-import javax.persistence.Index;
-import javax.persistence.JoinColumn;
-import javax.persistence.Table;
-
 @Entity
-@Table(name = "users", indexes = { @Index(columnList = "id", name = "users_id_idx"),
+@Table(name = "users", indexes = {@Index(columnList = "id", name = "users_id_idx"),
         @Index(columnList = "username", name = "username_idx"),
-        @Index(columnList = "session_id", name = "users_session_id_idx") })
+        @Index(columnList = "session_id", name = "users_session_id_idx")})
 public class User implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -40,7 +31,7 @@ public class User implements Serializable {
     @ElementCollection
     @CollectionTable(name = "users_subscribed", joinColumns = @JoinColumn(name = "subscriber"), indexes = {
             @Index(columnList = "subscriber", name = "users_subscribed_subscriber_idx"),
-            @Index(columnList = "channel", name = "users_subscribed_channel_idx") })
+            @Index(columnList = "channel", name = "users_subscribed_channel_idx")})
     @Column(name = "channel", length = 30)
     private List<String> subscribed_ids;
 
