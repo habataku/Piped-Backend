@@ -1,15 +1,15 @@
 package me.kavin.piped.utils.obj.db;
 
-import javax.persistence.*;
+import jakarta.persistence.*;
 
 @Entity
-@Table(name = "videos", indexes = { @Index(columnList = "id", name = "videos_id_idx"),
+@Table(name = "videos", indexes = {@Index(columnList = "id", name = "videos_id_idx"),
         @Index(columnList = "uploader_id", name = "video_uploader_id_idx"),
-        @Index(columnList = "uploaded", name = "video_uploaded_idx") })
+        @Index(columnList = "uploaded", name = "video_uploaded_idx")})
 public class Video {
 
     @Id
-    @Column(name = "id", unique = true, length = 16)
+    @Column(name = "id", unique = true, length = 16, nullable = false)
     private String id;
 
     @Column(name = "title", length = 120)
@@ -24,23 +24,27 @@ public class Video {
     @Column(name = "uploaded")
     private long uploaded;
 
-    @Column(name = "thumbnail", length = 150)
+    @Column(name = "thumbnail", length = 400)
     private String thumbnail;
 
+    @Column(name = "is_short", nullable = false, columnDefinition = "boolean default false")
+    private boolean isShort;
+
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "uploader_id")
+    @JoinColumn(name = "uploader_id", nullable = false)
     private Channel channel;
 
     public Video() {
     }
 
-    public Video(String id, String title, long views, long duration, long uploaded, String thumbnail, Channel channel) {
+    public Video(String id, String title, long views, long duration, long uploaded, String thumbnail, boolean isShort, Channel channel) {
         this.id = id;
         this.title = title;
         this.views = views;
         this.duration = duration;
         this.uploaded = uploaded;
         this.thumbnail = thumbnail;
+        this.isShort = isShort;
         this.channel = channel;
     }
 
@@ -90,6 +94,14 @@ public class Video {
 
     public void setThumbnail(String thumbnail) {
         this.thumbnail = thumbnail;
+    }
+
+    public boolean isShort() {
+        return isShort;
+    }
+
+    public void setShort(boolean aShort) {
+        isShort = aShort;
     }
 
     public Channel getChannel() {

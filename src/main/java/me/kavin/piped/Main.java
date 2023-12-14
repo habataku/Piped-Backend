@@ -1,59 +1,151 @@
 package me.kavin.piped;
 
 import io.activej.inject.Injector;
+import io.sentry.Sentry;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+import jakarta.persistence.criteria.CriteriaBuilder;
 import me.kavin.piped.consts.Constants;
-import me.kavin.piped.utils.DatabaseSessionFactory;
-import me.kavin.piped.utils.DownloaderImpl;
-import me.kavin.piped.utils.Multithreading;
-import me.kavin.piped.utils.ResponseHelper;
+import me.kavin.piped.server.ServerLauncher;
+import me.kavin.piped.utils.*;
+import me.kavin.piped.utils.matrix.SyncRunner;
+import me.kavin.piped.utils.obj.MatrixHelper;
+import me.kavin.piped.utils.obj.db.PlaylistVideo;
 import me.kavin.piped.utils.obj.db.PubSub;
-import me.kavin.piped.utils.obj.db.User;
+import me.kavin.piped.utils.obj.db.Video;
+import okhttp3.OkHttpClient;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.hibernate.Session;
-import org.hibernate.Transaction;
-import org.hibernate.query.Query;
+import org.hibernate.StatelessSession;
 import org.schabi.newpipe.extractor.NewPipe;
+import org.schabi.newpipe.extractor.localization.ContentCountry;
 import org.schabi.newpipe.extractor.localization.Localization;
-import org.schabi.newpipe.extractor.services.youtube.YoutubeThrottlingDecrypter;
+import org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager;
 import org.schabi.newpipe.extractor.services.youtube.extractors.YoutubeStreamExtractor;
 
-import javax.persistence.criteria.CriteriaBuilder;
-import javax.persistence.criteria.CriteriaQuery;
+import java.security.Security;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+import static me.kavin.piped.consts.Constants.MATRIX_SERVER;
 
 public class Main {
 
     public static void main(String[] args) throws Exception {
 
-        NewPipe.init(new DownloaderImpl(), new Localization("en", "US"));
+        Security.setProperty("crypto.policy", "unlimited");
+        Security.addProvider(new BouncyCastleProvider());
+
+        NewPipe.init(new DownloaderImpl(), new Localization("en", "US"), ContentCountry.DEFAULT, Multithreading.getCachedExecutor());
+        YoutubeStreamExtractor.forceFetchAndroidClient(true);
         YoutubeStreamExtractor.forceFetchIosClient(true);
 
+        Sentry.init(options -> {
+            options.setDsn(Constants.SENTRY_DSN);
+            options.setRelease(Constants.VERSION);
+            options.addIgnoredExceptionForType(ErrorResponse.class);
+            options.setTracesSampleRate(0.1);
+        });
+
         Injector.useSpecializer();
+
+        try {
+            LiquibaseHelper.init();
+        } catch (Exception e) {
+            ExceptionHandler.handle(e);
+            System.exit(1);
+        }
+
+        Multithreading.runAsync(() ->  Thread.ofVirtual().start(new SyncRunner(
+                new OkHttpClient.Builder().readTimeout(60, TimeUnit.SECONDS).build(),
+                MATRIX_SERVER,
+                MatrixHelper.MATRIX_TOKEN)
+        ));
 
         new Timer().scheduleAtFixedRate(new TimerTask() {
             @Override
             public void run() {
-                try (Session s = DatabaseSessionFactory.createSession()) {
+                System.out.printf("ThrottlingCache: %o entries%n", YoutubeJavaScriptPlayerManager.getThrottlingParametersCacheSize());
+                YoutubeJavaScriptPlayerManager.clearThrottlingParametersCache();
+            }
+        }, 0, TimeUnit.MINUTES.toMillis(60));
 
-                    CriteriaBuilder cb = s.getCriteriaBuilder();
-                    CriteriaQuery<PubSub> criteria = cb.createQuery(PubSub.class);
-                    var root = criteria.from(PubSub.class);
-                    var userRoot = criteria.from(User.class);
-                    criteria.select(root)
-                            .where(cb.and(
-                                    cb.lessThan(root.get("subbedAt"), System.currentTimeMillis() - TimeUnit.DAYS.toMillis(4)),
-                                    cb.isMember(root.get("id"), userRoot.<Collection<String>>get("subscribed_ids"))
-                            )).distinct(true);
+        if (!Constants.DISABLE_SERVER)
+            new Thread(() -> {
+                try {
+                    new ServerLauncher().launch(args);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            }).start();
 
-                    List<PubSub> pubSubList = s.createQuery(criteria).list();
+        try (Session ignored = DatabaseSessionFactory.createSession()) {
+            System.out.println("Database connection is ready!");
+        } catch (Throwable t) {
+            t.printStackTrace();
+            System.exit(1);
+        }
 
-                    Collections.shuffle(pubSubList);
+        // Close the HikariCP connection pool
+        Runtime.getRuntime().addShutdownHook(new Thread(DatabaseSessionFactory::close));
 
-                    pubSubList.stream().parallel()
-                            .forEach(pubSub -> {
-                                if (pubSub != null)
-                                    Multithreading.runAsyncLimitedPubSub(() -> ResponseHelper.subscribePubSub(pubSub.getId()));
-                            });
+        if (Constants.DISABLE_TIMERS)
+            return;
+
+        new Timer().scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                try (StatelessSession s = DatabaseSessionFactory.createStatelessSession()) {
+
+                    List<String> channelIds = s.createNativeQuery("SELECT id FROM pubsub WHERE subbed_at < :subbedTime AND id IN (" +
+                                    "SELECT DISTINCT channel FROM users_subscribed" +
+                                    " UNION " +
+                                    "SELECT id FROM unauthenticated_subscriptions WHERE subscribed_at > :unauthSubbed" +
+                                    ")", String.class)
+                            .setParameter("subbedTime", System.currentTimeMillis() - TimeUnit.DAYS.toMillis(4))
+                            .setParameter("unauthSubbed", System.currentTimeMillis() - TimeUnit.DAYS.toMillis(Constants.SUBSCRIPTIONS_EXPIRY))
+                            .stream()
+                            .filter(Objects::nonNull)
+                            .distinct()
+                            .collect(Collectors.toCollection(ObjectArrayList::new));
+
+                    Collections.shuffle(channelIds);
+
+                    var queue = new ConcurrentLinkedQueue<>(channelIds);
+
+                    System.out.println("PubSub: queue size - " + queue.size() + " channels");
+
+                    for (int i = 0; i < Runtime.getRuntime().availableProcessors(); i++) {
+                        new Thread(() -> {
+
+                            Object o = new Object();
+
+                            String channelId;
+                            while ((channelId = queue.poll()) != null) {
+                                try {
+                                    CompletableFuture<?> future = PubSubHelper.subscribePubSub(channelId);
+
+                                    if (future == null)
+                                        continue;
+
+                                    future.whenComplete((resp, throwable) -> {
+                                        synchronized (o) {
+                                            o.notify();
+                                        }
+                                    });
+
+                                    synchronized (o) {
+                                        o.wait();
+                                    }
+
+                                } catch (Exception e) {
+                                    ExceptionHandler.handle(e);
+                                }
+                            }
+                        }, "PubSub-" + i).start();
+                    }
 
                 } catch (Exception e) {
                     e.printStackTrace();
@@ -64,16 +156,46 @@ public class Main {
         new Timer().scheduleAtFixedRate(new TimerTask() {
             @Override
             public void run() {
-                try (Session s = DatabaseSessionFactory.createSession()) {
+                try (StatelessSession s = DatabaseSessionFactory.createStatelessSession()) {
 
-                    Transaction tr = s.getTransaction();
+                    s.createNativeQuery("SELECT channel_id.channel FROM " +
+                                    "(SELECT DISTINCT channel FROM users_subscribed UNION SELECT id FROM unauthenticated_subscriptions WHERE subscribed_at > :unauthSubbed) " +
+                                    "channel_id LEFT JOIN pubsub on pubsub.id = channel_id.channel " +
+                                    "WHERE pubsub.id IS NULL", String.class)
+                            .setParameter("unauthSubbed", System.currentTimeMillis() - TimeUnit.DAYS.toMillis(Constants.SUBSCRIPTIONS_EXPIRY))
+                            .getResultStream()
+                            .parallel()
+                            .filter(ChannelHelpers::isValidId)
+                            .forEach(id -> Multithreading.runAsyncLimitedPubSub(() -> {
+                                try (StatelessSession sess = DatabaseSessionFactory.createStatelessSession()) {
+                                    var pubsub = new PubSub(id, -1);
+                                    var tr = sess.beginTransaction();
+                                    sess.insert(pubsub);
+                                    tr.commit();
+                                }
+                            }));
 
-                    tr.begin();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }, 0, TimeUnit.DAYS.toMillis(1));
 
-                    Query<?> query = s.createQuery("delete from Video where uploaded < :time").setParameter("time",
-                            System.currentTimeMillis() - TimeUnit.DAYS.toMillis(Constants.FEED_RETENTION));
+        new Timer().scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                try (StatelessSession s = DatabaseSessionFactory.createStatelessSession()) {
 
-                    System.out.println(String.format("Cleanup: Removed %o old videos", query.executeUpdate()));
+                    var cb = s.getCriteriaBuilder();
+                    var cd = cb.createCriteriaDelete(Video.class);
+                    var root = cd.from(Video.class);
+                    cd.where(cb.lessThan(root.get("uploaded"), System.currentTimeMillis() - TimeUnit.DAYS.toMillis(Constants.FEED_RETENTION)));
+
+                    var tr = s.beginTransaction();
+
+                    var query = s.createMutationQuery(cd);
+
+                    System.out.printf("Cleanup: Removed %o old videos%n", query.executeUpdate());
 
                     tr.commit();
 
@@ -86,16 +208,26 @@ public class Main {
         new Timer().scheduleAtFixedRate(new TimerTask() {
             @Override
             public void run() {
-                try {
-                    System.out.println(String.format("ThrottlingCache: %o entries", YoutubeThrottlingDecrypter.getCacheSize()));
-                    YoutubeThrottlingDecrypter.clearCache();
-                } catch (Exception e) {
-                    e.printStackTrace();
+                try (StatelessSession s = DatabaseSessionFactory.createStatelessSession()) {
+
+                    CriteriaBuilder cb = s.getCriteriaBuilder();
+
+                    var pvQuery = cb.createCriteriaDelete(PlaylistVideo.class);
+                    var pvRoot = pvQuery.from(PlaylistVideo.class);
+
+                    var subQuery = pvQuery.subquery(String.class);
+                    var subRoot = subQuery.from(me.kavin.piped.utils.obj.db.Playlist.class);
+
+                    subQuery.select(subRoot.join("videos").get("id")).distinct(true);
+
+                    pvQuery.where(cb.not(pvRoot.get("id").in(subQuery)));
+
+                    var tr = s.beginTransaction();
+                    s.createMutationQuery(pvQuery).executeUpdate();
+                    tr.commit();
                 }
             }
         }, 0, TimeUnit.MINUTES.toMillis(60));
-
-        new ServerLauncher().launch(args);
 
     }
 }

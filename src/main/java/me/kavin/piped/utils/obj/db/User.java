@@ -1,14 +1,17 @@
 package me.kavin.piped.utils.obj.db;
 
-import javax.persistence.*;
+import jakarta.persistence.*;
+import org.hibernate.annotations.Cascade;
+
 import java.io.Serializable;
 import java.util.Set;
 import java.util.UUID;
 
 @Entity
-@Table(name = "users", indexes = {@Index(columnList = "id", name = "users_id_idx"),
+@Table(name = "users", indexes = {
         @Index(columnList = "username", name = "username_idx"),
-        @Index(columnList = "session_id", name = "users_session_id_idx")})
+        @Index(columnList = "session_id", name = "users_session_id_idx")
+})
 public class User implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -28,10 +31,11 @@ public class User implements Serializable {
     private String sessionId;
 
     @ElementCollection
-    @CollectionTable(name = "users_subscribed", joinColumns = @JoinColumn(name = "subscriber"), indexes = {
-            @Index(columnList = "subscriber", name = "users_subscribed_subscriber_idx"),
-            @Index(columnList = "channel", name = "users_subscribed_channel_idx")})
-    @Column(name = "channel", length = 30)
+    @CollectionTable(name = "users_subscribed", joinColumns = @JoinColumn(name = "subscriber", nullable = false),
+            indexes = {@Index(columnList = "subscriber", name = "users_subscribed_subscriber_idx"),
+                    @Index(columnList = "channel", name = "users_subscribed_channel_idx")})
+    @Column(name = "channel", length = 30, nullable = false)
+    @Cascade(org.hibernate.annotations.CascadeType.ALL)
     private Set<String> subscribed_ids;
 
     @OneToMany(mappedBy = "owner", cascade = CascadeType.ALL)

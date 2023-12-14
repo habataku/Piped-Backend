@@ -1,6 +1,6 @@
 package me.kavin.piped.utils.obj.db;
 
-import javax.persistence.*;
+import jakarta.persistence.*;
 
 @Entity
 @Table(name = "playlist_videos", indexes = {@Index(columnList = "id", name = "playlist_videos_id_idx"),
@@ -19,7 +19,7 @@ public class PlaylistVideo {
     }
 
     @Id
-    @Column(name = "id", unique = true, length = 16)
+    @Column(name = "id", unique = true, length = 16, nullable = false)
     private String id;
 
     @Column(name = "title", length = 120)
@@ -28,11 +28,11 @@ public class PlaylistVideo {
     @Column(name = "duration")
     private long duration;
 
-    @Column(name = "thumbnail", length = 150)
+    @Column(name = "thumbnail", length = 400)
     private String thumbnail;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "uploader_id")
+    @JoinColumn(name = "uploader_id", nullable = false)
     private Channel channel;
 
     public String getId() {

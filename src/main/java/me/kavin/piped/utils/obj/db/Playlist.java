@@ -1,8 +1,9 @@
 package me.kavin.piped.utils.obj.db;
 
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+import jakarta.persistence.*;
+import org.hibernate.annotations.Cascade;
 
-import javax.persistence.*;
 import java.util.List;
 import java.util.UUID;
 
@@ -29,7 +30,7 @@ public class Playlist {
     @GeneratedValue(generator = "UUID", strategy = GenerationType.IDENTITY)
     private UUID playlist_id;
 
-    @Column(name = "name", length = 100)
+    @Column(name = "name", length = 200)
     private String name;
 
     @Column(name = "short_description", length = 100)
@@ -39,13 +40,14 @@ public class Playlist {
     private String thumbnail;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "owner")
+    @JoinColumn(name = "owner", nullable = false)
     private User owner;
 
     @ManyToMany
     @Column(name = "videos")
     @CollectionTable(name = "playlists_videos_ids")
     @OrderColumn(name = "videos_order")
+    @Cascade(org.hibernate.annotations.CascadeType.PERSIST)
     private List<PlaylistVideo> videos;
 
     public long getId() {

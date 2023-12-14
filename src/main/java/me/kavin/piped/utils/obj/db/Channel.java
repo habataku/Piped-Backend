@@ -1,20 +1,16 @@
 package me.kavin.piped.utils.obj.db;
 
-import javax.persistence.Column;
-import javax.persistence.Entity;
-import javax.persistence.Id;
-import javax.persistence.Index;
-import javax.persistence.Table;
+import jakarta.persistence.*;
 
 @Entity
 @Table(name = "channels", indexes = {@Index(columnList = "uploader_id", name = "channels_uploader_id_idx")})
 public class Channel {
 
     @Id
-    @Column(name = "uploader_id", length = 30)
+    @Column(name = "uploader_id", unique = true, nullable = false, length = 30)
     private String uploader_id;
 
-    @Column(name = "uploader", length = 80)
+    @Column(name = "uploader", length = 100)
     private String uploader;
 
     @Column(name = "uploader_avatar", length = 150)

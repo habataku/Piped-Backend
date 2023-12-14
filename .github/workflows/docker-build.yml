@@ -8,63 +8,51 @@ on:
       - master
 
 jobs:
-  build-docker-hotspot:
+  build-jdk:
+    uses: ./.github/workflows/fat-build.yml
+
+  build-docker:
+    needs: build-jdk
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+#          - image: 1337kavin/piped:openj9
+#            dockerfile: ./Dockerfile.openj9.ci
+          - image: 1337kavin/piped:hotspot
+            dockerfile: ./Dockerfile.ci
+          - image: 1337kavin/piped:latest,1337kavin/piped:azul-zulu
+            dockerfile: ./Dockerfile.azul.ci
+          - image: 1337kavin/piped:graalvm-jvm
+            dockerfile: ./Dockerfile.graalvm-jvm.ci
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v3
+        with:
+          name: piped.jar
       - name: Create Version File
         run: echo $(git log -1 --date=short --pretty=format:%cd)-$(git rev-parse --short HEAD) > VERSION
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2.0.0
+        uses: docker/setup-qemu-action@v3
         with:
           platforms: all
       - name: Set up Docker Buildx
         id: buildx
-        uses: docker/setup-buildx-action@v2.0.0
+        uses: docker/setup-buildx-action@v3
         with:
           version: latest
       - name: Login to DockerHub
-        uses: docker/login-action@v2.0.0
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
       - name: Build and push
-        uses: docker/build-push-action@v3.0.0
+        uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: 1337kavin/piped:hotspot
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-  build-docker-openj9:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Create Version File
-        run: echo $(git log -1 --date=short --pretty=format:%cd)-$(git rev-parse --short HEAD) > VERSION
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2.0.0
-        with:
-          platforms: all
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v2.0.0
-        with:
-          version: latest
-      - name: Login to DockerHub
-        uses: docker/login-action@v2.0.0
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-      - name: Build and push
-        uses: docker/build-push-action@v3.0.0
-        with:
-          context: .
-          file: ./Dockerfile.openj9
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: 1337kavin/piped:latest,1337kavin/piped:openj9
+          tags: ${{ matrix.image }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -1,25 +1,19 @@
 package me.kavin.piped.utils;
 
-import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.LoadingCache;
-import com.github.benmanes.caffeine.cache.Scheduler;
-import com.grack.nanojson.JsonParserException;
-import me.kavin.piped.consts.Constants;
-import me.kavin.piped.utils.obj.SolvedCaptcha;
-import okhttp3.FormBody;
-import okhttp3.RequestBody;
-import org.apache.commons.lang3.StringUtils;
-import org.jetbrains.annotations.NotNull;
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Element;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import org.schabi.newpipe.extractor.downloader.Downloader;
 import org.schabi.newpipe.extractor.downloader.Request;
 import org.schabi.newpipe.extractor.downloader.Response;
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException;
+import rocks.kavin.reqwest4j.ReqwestUtils;
 
 import java.io.IOException;
 import java.net.HttpCookie;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 public class DownloaderImpl extends Downloader {
 
@@ -27,102 +21,100 @@ public class DownloaderImpl extends Downloader {
     private static long cookie_received;
     private static final Object cookie_lock = new Object();
 
-    final LoadingCache<Request, Response> responseCache = Caffeine.newBuilder()
-            .expireAfterWrite(1, TimeUnit.MINUTES)
-            .scheduler(Scheduler.systemScheduler())
-            .maximumSize(100).build(this::executeRequest);
-
-    @Override
-    public Response execute(@NotNull Request request) {
-        return responseCache.get(request);
-    }
-
     /**
      * Executes a request with HTTP/2.
      */
-    public Response executeRequest(Request request) throws IOException, ReCaptchaException {
+    @Override
+    public Response execute(Request request) throws IOException, ReCaptchaException {
 
         // TODO: HTTP/3 aka QUIC
         var bytes = request.dataToSend();
-        RequestBody body = null;
-        if (bytes != null)
-            body = RequestBody.create(bytes);
-
-        var builder = new okhttp3.Request.Builder()
-                .url(request.url())
-                .method(request.httpMethod(), body)
-                .header("User-Agent", Constants.USER_AGENT);
+        Map<String, String> headers = new Object2ObjectOpenHashMap<>();
 
         if (saved_cookie != null && !saved_cookie.hasExpired())
-            builder.header("Cookie", saved_cookie.getName() + "=" + saved_cookie.getValue());
+            headers.put("Cookie", saved_cookie.getName() + "=" + saved_cookie.getValue());
 
-        request.headers().forEach((name, values) -> values.forEach(value -> builder.header(name, value)));
+        request.headers().forEach((name, values) -> values.forEach(value -> headers.put(name, value)));
 
-        var resp = Constants.h2client.newCall(builder.build()).execute();
+        var future = ReqwestUtils.fetch(request.url(), request.httpMethod(), bytes, headers);
 
-        if (resp.code() == 429) {
+        // Recaptcha solver code
+        // Commented out, as it hasn't been ported to reqwest4j yet
+        // Also, this was last seen a long time back
 
-            synchronized (cookie_lock) {
+//        future.thenAcceptAsync(resp -> {
+//            if (resp.status() == 429) {
+//                synchronized (cookie_lock) {
+//
+//                    if (saved_cookie != null && saved_cookie.hasExpired()
+//                            || (System.currentTimeMillis() - cookie_received > TimeUnit.MINUTES.toMillis(30)))
+//                        saved_cookie = null;
+//
+//                    String redir_url = String.valueOf(resp.finalUrl());
+//
+//                    if (saved_cookie == null && redir_url.startsWith("https://www.google.com/sorry")) {
+//
+//                        var formBuilder = new FormBody.Builder();
+//                        String sitekey = null, data_s = null;
+//
+//                        for (Element el : Jsoup.parse(new String(resp.body())).selectFirst("form").children()) {
+//                            String name;
+//                            if (!(name = el.tagName()).equals("script")) {
+//                                if (name.equals("input"))
+//                                    formBuilder.add(el.attr("name"), el.attr("value"));
+//                                else if (name.equals("div") && el.attr("id").equals("recaptcha")) {
+//                                    sitekey = el.attr("data-sitekey");
+//                                    data_s = el.attr("data-s");
+//                                }
+//                            }
+//                        }
+//
+//                        if (StringUtils.isEmpty(sitekey) || StringUtils.isEmpty(data_s))
+//                            ExceptionHandler.handle(new ReCaptchaException("Could not get recaptcha", redir_url));
+//
+//                        SolvedCaptcha solved = null;
+//
+//                        try {
+//                            solved = CaptchaSolver.solve(redir_url, sitekey, data_s);
+//                        } catch (JsonParserException | InterruptedException | IOException e) {
+//                            e.printStackTrace();
+//                        }
+//
+//                        formBuilder.add("g-recaptcha-response", solved.getRecaptchaResponse());
+//
+//                        var formReqBuilder = new okhttp3.Request.Builder()
+//                                .url("https://www.google.com/sorry/index")
+//                                .header("User-Agent", Constants.USER_AGENT)
+//                                .post(formBuilder.build());
+//
+//                        okhttp3.Response formResponse;
+//                        try {
+//                            formResponse = Constants.h2_no_redir_client.newCall(formReqBuilder.build()).execute();
+//                        } catch (IOException e) {
+//                            throw new RuntimeException(e);
+//                        }
+//
+//                        saved_cookie = HttpCookie.parse(URLUtils.silentDecode(StringUtils
+//                                        .substringAfter(formResponse.headers().get("Location"), "google_abuse=")))
+//                                .get(0);
+//                        cookie_received = System.currentTimeMillis();
+//                    }
+//                }
+//            }
+//        }, Multithreading.getCachedExecutor());
 
-                if (saved_cookie != null && saved_cookie.hasExpired()
-                        || (System.currentTimeMillis() - cookie_received > TimeUnit.MINUTES.toMillis(30)))
-                    saved_cookie = null;
+        var responseFuture = future.thenApplyAsync(resp -> {
+            Map<String, List<String>> headerMap = resp.headers().entrySet().stream()
+                    .collect(Object2ObjectOpenHashMap::new, (m, e) -> m.put(e.getKey(), List.of(e.getValue())), Map::putAll);
 
-                String redir_url = String.valueOf(resp.request().url());
+            return new Response(resp.status(), null, headerMap, new String(resp.body()),
+                    resp.finalUrl());
+        }, Multithreading.getCachedExecutor());
 
-                if (saved_cookie == null && redir_url.startsWith("https://www.google.com/sorry")) {
-
-                    var formBuilder = new FormBody.Builder();
-                    String sitekey = null, data_s = null;
-
-                    for (Element el : Jsoup.parse(resp.body().string()).selectFirst("form").children()) {
-                        String name;
-                        if (!(name = el.tagName()).equals("script")) {
-                            if (name.equals("input"))
-                                formBuilder.add(el.attr("name"), el.attr("value"));
-                            else if (name.equals("div") && el.attr("id").equals("recaptcha")) {
-                                sitekey = el.attr("data-sitekey");
-                                data_s = el.attr("data-s");
-                            }
-                        }
-                    }
-                    if (StringUtils.isEmpty(sitekey) || StringUtils.isEmpty(data_s))
-                        throw new ReCaptchaException("Could not get recaptcha", redir_url);
-
-                    SolvedCaptcha solved = null;
-
-                    try {
-                        solved = CaptchaSolver.solve(redir_url, sitekey, data_s);
-                    } catch (JsonParserException | InterruptedException e) {
-                        e.printStackTrace();
-                    }
-
-                    formBuilder.add("g-recaptcha-response", solved.getRecaptchaResponse());
-
-                    var formReqBuilder = new okhttp3.Request.Builder()
-                            .url("https://www.google.com/sorry/index")
-                            .header("User-Agent", Constants.USER_AGENT)
-                            .post(formBuilder.build());
-
-                    var formResponse = Constants.h2_no_redir_client.newCall(formReqBuilder.build()).execute();
-
-                    saved_cookie = HttpCookie.parse(URLUtils.silentDecode(StringUtils
-                                    .substringAfter(formResponse.headers().get("Location"), "google_abuse=")))
-                            .get(0);
-                    cookie_received = System.currentTimeMillis();
-                }
-
-                if (saved_cookie != null) // call again as captcha has been solved or cookie has not expired.
-                    execute(request);
-            }
-
+        try {
+            return responseFuture.get(10, TimeUnit.SECONDS);
+        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+            throw new IOException(e);
         }
-
-        var response = new Response(resp.code(), resp.message(), resp.headers().toMultimap(), resp.body().string(),
-                String.valueOf(resp.request().url()));
-
-        resp.close();
-
-        return response;
     }
 }
